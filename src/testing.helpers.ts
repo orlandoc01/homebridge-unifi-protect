@@ -1389,6 +1389,52 @@ export class TestStateStore {
     this.push({ ...this.state, cameras });
   }
 
+  // Restore a camera record, mirroring the reducer's device-added reduction: the cameras map is rebuilt with the record while every other slice keeps its reference.
+  // The fixture for the return-within-the-grace tests - the record removed by removeCameraRecord comes back, as a re-adoption within the DelayDeviceRemoval grace.
+  public restoreCameraRecord(record: ProtectCameraConfig): void {
+
+    const cameras = new Map(this.state.cameras);
+
+    cameras.set(record.id, record);
+    this.push({ ...this.state, cameras });
+  }
+
+  // The light-slice mirror of removeCameraRecord: the lights map is rebuilt without the record while every other slice keeps its reference.
+  public removeLightRecord(id: string): void {
+
+    const lights = new Map(this.state.lights);
+
+    lights.delete(id);
+    this.push({ ...this.state, lights });
+  }
+
+  // The light-slice mirror of restoreCameraRecord: the lights map is rebuilt with the record while every other slice keeps its reference.
+  public restoreLightRecord(record: ProtectLightConfig): void {
+
+    const lights = new Map(this.state.lights);
+
+    lights.set(record.id, record);
+    this.push({ ...this.state, lights });
+  }
+
+  // The sensor-slice mirror of removeCameraRecord: the sensors map is rebuilt without the record while every other slice keeps its reference.
+  public removeSensorRecord(id: string): void {
+
+    const sensors = new Map(this.state.sensors);
+
+    sensors.delete(id);
+    this.push({ ...this.state, sensors });
+  }
+
+  // The sensor-slice mirror of restoreCameraRecord: the sensors map is rebuilt with the record while every other slice keeps its reference.
+  public restoreSensorRecord(record: ProtectSensorConfig): void {
+
+    const sensors = new Map(this.state.sensors);
+
+    sensors.set(record.id, record);
+    this.push({ ...this.state, sensors });
+  }
+
   /* Observe a selector over the state, mirroring the real StateStore.observe contract exactly: a native async generator, so registration is LAZY (it happens when
    * iteration begins, and an un-iterated observe registers nothing); an already-aborted signal yields nothing; the baseline is seeded at iteration start; abort
    * closes the observer (drain-then-close); and the finally deregisters on every exit path - abort, break, or return().

@@ -222,6 +222,47 @@ describe("real ProtectLight construction and observer behavior", () => {
     assert.deepEqual(recording.calls, [], "the if(lastMotion) guard suppressed delivery for the falsy timestamp");
   });
 
+  test("a delivered lastMotion stamp is not replayed when the light record leaves and returns within the grace, and a later stamp still fires", async () => {
+
+    // Positive liveness control: the first truthy advance is a genuine change that fires exactly once.
+    store.pushLightPatch(lightConfig.id, { lastMotion: 1700000000000 });
+
+    await settle();
+
+    assert.deepEqual(recording.calls, [{ id: lightConfig.id, kind: "motion" }], "the first truthy lastMotion advance routed to motionEventHandler exactly once");
+
+    // The record leaves (the gate drops that wake) and returns unchanged within the grace. The store yields the same stamp again; the occurrence guard must swallow
+    // it rather than replay the detection.
+    const record = store.snapshot().lights.get(lightConfig.id);
+
+    assert.ok(record, "the light record is present in the store before it is removed");
+
+    const baseline = wakeLog.length;
+
+    store.removeLightRecord(lightConfig.id);
+
+    await settle();
+
+    store.restoreLightRecord(record);
+
+    await settle();
+
+    // The leave wakes nothing (the gate drops every slice), so the window is exactly the return set: every level observer re-reads, in registration order, and the
+    // occurrence observer is the one absentee - the guard swallowed its replay before the wake milestone, while the level wakes prove the return reached the drain.
+    assert.deepEqual(wakeLog.slice(baseline), [ { accessoryId: accessory.UUID, key: "device.name" }, { accessoryId: accessory.UUID, key: "device.firmwareVersion" },
+      { accessoryId: accessory.UUID, key: "light.isLightOn" }, { accessoryId: accessory.UUID, key: "light.ledLevel" },
+      { accessoryId: accessory.UUID, key: "light.isIndicatorEnabled" } ], "the return woke every level observer and the lastMotion observer alone stayed silent");
+    assert.deepEqual(recording.calls, [{ id: lightConfig.id, kind: "motion" }], "the record returning with the stamp it left with did not replay the motion");
+
+    // The guard skipped the replay without killing the loop: a later stamp is a real change and fires.
+    store.pushLightPatch(lightConfig.id, { lastMotion: 1700000005000 });
+
+    await settle();
+
+    assert.deepEqual(recording.calls, [ { id: lightConfig.id, kind: "motion" }, { id: lightConfig.id, kind: "motion" } ],
+      "a later lastMotion advance after the return still routed - the observer is live");
+  });
+
   test("with the status-LED switch feature enabled, an isIndicatorEnabled push wakes its observer and updates the switch", async () => {
 
     // A feature-enabled variant: enabling Device.StatusLed.Switch materializes the SWITCH_STATUS_LED-subtyped Switch the observer drives.

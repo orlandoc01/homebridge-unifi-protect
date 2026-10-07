@@ -18,9 +18,17 @@ import type { ProtectPlatform } from "../platform.ts";
 // dies. The key and the title are deliberately separate facets rather than one string: the protocol field name and the product capability genuinely diverge - the
 // `ispSettings` slice is what a user calls "night vision" - so neither can be derived from the other, and both are authored at the observe site, the one place that knows
 // both the protocol slice and the product capability it serves.
+//
+// `occurrence` marks a slice whose value is a stamp the controller advances to signal an event - a camera's lastMotion, a sensor's motionDetectedAt - rather than a
+// state the handler reflects. An occurrence slice is delivered only when the stamp differs from the one the handler last received or, before any delivery, from the
+// one the slice carried when the loop began; a wake that re-yields an unchanged stamp (a record returning within the removal grace) is a replay of an event that
+// already happened, not a new one, and an undefined stamp (the slice of an absent record) is never an occurrence at all. Level slices leave it unset, so a wake that
+// re-reads unchanged live state after the removal grace still runs - availability must re-read on a return, because the grace can have driven it offline underneath
+// the unchanged slice.
 interface ObservedSlice<T> {
 
   readonly key: string;
+  readonly occurrence?: boolean;
   readonly selector: (state: ProtectState) => T;
   readonly title: string;
 }
@@ -137,16 +145,21 @@ export abstract class ProtectBase {
   // than trusting the yielded value so a multi-read reaction always sees a coherent snapshot, and the seams leaves vary are the lifetime signal (observeSignal) and
   // the wake attribution (onObserverWake). The slice descriptor's names route to separate consumers: its key tags the wake on the diagnostics channel, its title
   // names the capability in the user-facing fault report. The detached-loop resilience envelope (swallow on abort, surface a fault once) is delegated to
-  // homebridge-plugin-utils' superviseLoop and the fault report to its loopFaultReporter; both single-sourced. What remains here is just the observe-specific body
-  // superviseLoop supervises.
+  // homebridge-plugin-utils' superviseLoop and the fault report to its loopFaultReporter; both single-sourced. The body also holds the occurrence replay guard: an
+  // occurrence slice is delivered only when its stamp differs from the one the handler last received, so a record returning within the removal grace cannot replay a
+  // stamp it left with. What remains here is just the observe-specific body superviseLoop supervises.
   protected observeState<T>(slice: ObservedSlice<T>, handler: (value: T) => void): void {
 
-    const { key, selector, title } = slice;
+    const { key, occurrence, selector, title } = slice;
     const signal = this.observeSignal;
 
     void superviseLoop({
 
       loop: async () => {
+
+        // The occurrence replay guard's memory: the last stamp handed to the handler, seeded from the slice's current value - the same baseline the store's observe
+        // captures at subscribe, so a never-delivered baseline cannot replay either. Consulted only for an occurrence slice; a level slice leaves it unread.
+        let delivered = occurrence ? selector(this.nvr.client.state.snapshot()) : undefined;
 
         for await (const value of this.nvr.client.state.observe(selector, { signal })) {
 
@@ -164,6 +177,26 @@ export abstract class ProtectBase {
           if(!this.recordPresent) {
 
             continue;
+          }
+
+          // A record that leaves and returns within the grace wakes every observer twice: once as it leaves (its slice going undefined, a wake the gate above drops when
+          // the drain still sees the record absent) and once as it returns, which the store cannot tell from a change because the returning value differs from the
+          // undefined it last yielded. For a state slice that second wake is right - the handler re-reads live state the grace may have moved underneath the unchanged
+          // slice. For an occurrence stamp it is a replay: the returning record carries the very stamp it left with, and delivering it would fire the handler for an
+          // event that already happened. So an occurrence slice is delivered only when its stamp differs from the one last handed over, and the guard is scoped to
+          // occurrence slices alone. When the remove and the restore land in one dispatch segment (two frames from one socket chunk, with no microtask checkpoint
+          // between them), the drain sees the record already back, so the leaving wake passes the gate and reaches the guard with its undefined stamp. An occurrence
+          // selector yields undefined when its record is gone, or when the field was never populated, and neither is an occurrence: undefined is skipped without
+          // touching the memory, so the unchanged stamp that drains next is still recognized as the replay it is. The guard sits before the wake milestone, like the
+          // gate's continue, so a suppressed replay publishes no wake.
+          if(occurrence) {
+
+            if(Object.is(value, undefined) || Object.is(value, delivered)) {
+
+              continue;
+            }
+
+            delivered = value;
           }
 
           this.onObserverWake(key);

@@ -500,6 +500,47 @@ describe("real ProtectSensor construction and family behavior", () => {
     assert.equal(recording.calls.length, recordingBaseline, "the if(motionDetectedAt) guard suppressed the firehose delivery for the falsy timestamp");
   });
 
+  test("a delivered motionDetectedAt stamp is not replayed when the sensor record leaves and returns within the grace, and a later stamp still fires", async () => {
+
+    // Positive liveness control: the first truthy advance is a genuine change that fires exactly once.
+    store.pushSensorPatch("test-sensor-1", { motionDetectedAt: 1700000000000 });
+
+    await settle();
+
+    assert.deepEqual(recording.calls, [{ id: "test-sensor-1", kind: "motion" }], "the first truthy motionDetectedAt advance routed to motionEventHandler exactly once");
+
+    // The record leaves (the gate drops that wake) and returns unchanged within the grace. The store yields the same stamp again; the occurrence guard must swallow
+    // it rather than replay the detection.
+    const record = store.snapshot().sensors.get("test-sensor-1");
+
+    assert.ok(record, "the sensor record is present in the store before it is removed");
+
+    const baseline = wakeLog.length;
+
+    store.removeSensorRecord("test-sensor-1");
+
+    await settle();
+
+    store.restoreSensorRecord(record);
+
+    await settle();
+
+    // The leave wakes nothing (the gate drops every slice), so the window is exactly the return set: every level observer re-reads, in registration order, and the
+    // occurrence observer is the one absentee - the guard swallowed its replay before the wake milestone, while the level wakes prove the return reached the drain.
+    assert.deepEqual(wakeLog.slice(baseline), [ { accessoryId: accessory.UUID, key: "device.name" }, { accessoryId: accessory.UUID, key: "device.firmwareVersion" },
+      { accessoryId: accessory.UUID, key: "sensor.tamperingDetectedAt" }, { accessoryId: accessory.UUID, key: "sensor.alarmTriggeredAt" },
+      { accessoryId: accessory.UUID, key: "sensor.config" } ], "the return woke every level observer and the motionDetectedAt observer alone stayed silent");
+    assert.deepEqual(recording.calls, [{ id: "test-sensor-1", kind: "motion" }], "the record returning with the stamp it left with did not replay the motion");
+
+    // The guard skipped the replay without killing the loop: a later stamp is a real change and fires.
+    store.pushSensorPatch("test-sensor-1", { motionDetectedAt: 1700000005000 });
+
+    await settle();
+
+    assert.deepEqual(recording.calls, [ { id: "test-sensor-1", kind: "motion" }, { id: "test-sensor-1", kind: "motion" } ],
+      "a later motionDetectedAt advance after the return still routed - the observer is live");
+  });
+
   test("a tamperingDetectedAt push wakes its observer and fans StatusTampered across every state-bearing service", async () => {
 
     // Build with two enabled state-bearing services (humidity + temperature) so updateTamperState's fan-out is non-vacuous - it must write more than one service.

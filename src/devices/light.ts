@@ -183,8 +183,9 @@ export class ProtectLight extends ProtectDevice {
     const light = deviceSelectors.light.byId(this.device.id);
 
     // Light motion, like sensor and camera motion, is a device-state field (lastMotion) the controller advances rather than a firehose occurrence, so observing the
-    // timestamp is the single source for this device, firing only on a real (truthy) detection rather than re-synthesizing it from a held prior value.
-    this.observeState({ key: "light.lastMotion", selector: state => light(state)?.lastMotion, title: "motion detection" }, lastMotion => {
+    // timestamp is the single source for this device, firing only on a real (truthy) detection rather than re-synthesizing it from a held prior value. The slice is an
+    // occurrence, so a record returning within the removal grace does not replay the stamp it left with (see observeState).
+    this.observeState({ key: "light.lastMotion", occurrence: true, selector: state => light(state)?.lastMotion, title: "motion detection" }, lastMotion => {
 
       if(lastMotion) {
 

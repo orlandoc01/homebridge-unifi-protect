@@ -662,8 +662,10 @@ export class ProtectSensor extends ProtectDevice {
     // Sensor motion is a device-state field, not a firehose occurrence: the controller surfaces a UP Sense motion as a fresh motionDetectedAt timestamp on the sensor
     // record, with no `event`-channel counterpart. So the single source for "did this sensor see motion?" is the timestamp itself, and observing it is the honest
     // single-source reaction - the selector's dedup is the diff, with no held #prev snapshot and nothing re-synthesized. We deliver only on a truthy timestamp (a real
-    // detection), never on a clear back to null. The camera and light families observe their own lastMotion the same way.
-    this.observeState({ key: "sensor.motionDetectedAt", selector: state => sensor(state)?.motionDetectedAt, title: "motion detection" }, motionDetectedAt => {
+    // detection), never on a clear back to null. The camera and light families observe their own lastMotion the same way. The slice is an occurrence, so a record
+    // returning within the removal grace does not replay the stamp it left with (see observeState).
+    this.observeState({ key: "sensor.motionDetectedAt", occurrence: true, selector: state => sensor(state)?.motionDetectedAt,
+      title: "motion detection" }, motionDetectedAt => {
 
       if(motionDetectedAt) {
 

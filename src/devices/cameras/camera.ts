@@ -407,10 +407,11 @@ export class ProtectCamera extends ProtectDevice implements ProtectCameraHost {
     // Bare motion is a device-state field, not a firehose occurrence: the controller signals a raw motion start by advancing the camera record's lastMotion timestamp, so
     // the camera observes it here exactly like the sensor and light families observe their own motion state. The store seeds this observer's baseline at subscribe and
     // yields only on a subsequent advance, so a bootstrap-hydrated value or a reconnect-unchanged value never fires - the truthy guard only screens the 0/never-detected
-    // case. Whether the advance actually trips the parent's MotionSensor is the bare-motion policy's decision: we fire only when smart detection is not the source of
-    // truth for this camera (see shouldDeliverBareMotion). The package forward is INDEPENDENT of the parent's bare-motion de-dup above - a recording package camera has
-    // no motion signal of its own, so the parent's raw motion always trips it whenever the package is recording for HKSV, regardless of whether the parent itself fired.
-    this.observeState({ key: "camera.lastMotion", selector: state => cam(state)?.lastMotion, title: "motion detection" }, lastMotion => {
+    // case. The slice is an occurrence, so a record returning within the removal grace does not replay the stamp it left with (see observeState). Whether the advance
+    // actually trips the parent's MotionSensor is the bare-motion policy's decision: we fire only when smart detection is not the source of truth for this camera (see
+    // shouldDeliverBareMotion). The package forward is INDEPENDENT of the parent's bare-motion de-dup above - a recording package camera has no motion signal of its
+    // own, so the parent's raw motion always trips it whenever the package is recording for HKSV, regardless of whether the parent itself fired.
+    this.observeState({ key: "camera.lastMotion", occurrence: true, selector: state => cam(state)?.lastMotion, title: "motion detection" }, lastMotion => {
 
       if(!lastMotion) {
 
