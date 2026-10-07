@@ -16,6 +16,12 @@
  * TestRecordingDispatch, which overrides only motionEventHandler. The override captures the routing (which device the ring fired for); it deliberately does not
  * re-test the handler's HomeKit effects, which are event-dispatch.ts's own concern.
  *
+ * The opt-in lastRing -> doorbell ring reaction rides the same recording dispatch: with Enable.Doorbell.LastRing, an advance of the camera record's lastRing timestamp
+ * fires doorbellEventHandler with this doorbell (the stand-in for the ring event an account outside the event stream is never sent); a repeated identical value, an
+ * unrelated patch, a null lastRing, a lastRing hydrated onto the record before construction, and the same advance without the option all fire nothing. The observer
+ * is always armed, so the without-option case subscribes to the observer-wake diagnostics channel and proves the observer woke - the handler's option read, not a
+ * missing observer, is what holds the ring back.
+ *
  * The volume Lightbulb's Brightness onSet is netted as a cross-device write: it routes to setChimeVolume, which PATCHes every real client.chimes entry serving this
  * doorbell with a modified ring, clamps a negative Brightness to zero, skips a chime that does not serve this doorbell or carries no ring for it, early-returns on
  * the first failed write, and reports both a generic failure and an authorization failure through the shared command-error log.
@@ -38,6 +44,7 @@ import type { TestAccessory, TestLogEntry, TestMqttClient, TestProtectNvr } from
 import { afterEach, describe, mock, test } from "node:test";
 import { G2_PRO_CHANNELS } from "../../camera.fixtures.ts";
 import type { Nullable } from "homebridge-plugin-utils";
+import type { ObserverWakePayload } from "../../diagnostics.ts";
 import type { ProtectAccessory } from "../../types.ts";
 import { ProtectAuthorizationError } from "unifi-protect";
 import { ProtectCamera } from "./camera.ts";
@@ -45,6 +52,7 @@ import { ProtectEventDispatch } from "../../nvr/event-dispatch.ts";
 import type { ProtectNvr } from "../../nvr/nvr.ts";
 import { ProtectReservedNames } from "../../types.ts";
 import assert from "node:assert/strict";
+import diagnosticsChannel from "node:diagnostics_channel";
 import { effectiveLcdMessage } from "./doorbell.ts";
 
 // One captured doorbell-ring routing. The onSet's observable effect is which device it routed to, so this is the shape the recording subclass captures - the same posture
@@ -96,11 +104,13 @@ function loggedAt(entries: TestLogEntry[], level: TestLogEntry["level"], substri
 // Build a REAL ProtectCamera against an isDoorbell-true config (so it construction-attaches its DoorbellCapability), exactly as doorbell-construction.test.ts
 // assembles it: the doorbell camera config (with the test's extra feature flags merged over isDoorbell), an optional chime serving it, the store double, the typed
 // NVR / platform doubles with the test's userOptions threaded into the REAL FeatureOptions engine and an optional dispatch factory, the read-through projection, and a
-// fresh accessory. The casts are confined to this seam - the instance is the production ProtectCamera and its composed capability.
+// fresh accessory. The casts are confined to this seam - the instance is the production ProtectCamera and its composed capability. seedLastRing, when supplied, is
+// committed to the store record BEFORE the doorbell is constructed, so the lastRing observer seeds its baseline against an already-present value - the
+// bootstrap-hydration case where a value present at subscribe must never fire.
 async function buildDoorbell(options: { chimeConfigs?: ProtectChimeConfig[]; dispatch?: (nvr: ProtectNvr) => ProtectEventDispatch;
   doorbellMessages?: { duration: number; message: string }[]; doorbellSettings?: ProtectNvrConfig["doorbellSettings"];
   featureFlags?: Partial<ProtectCameraConfig["featureFlags"]>; lcdMessage?: { duration?: number; resetAt?: Nullable<number>; text?: string; type?: string };
-  userOptions?: string[]; } = {}): Promise<BuiltDoorbell> {
+  seedLastRing?: number; userOptions?: string[]; } = {}): Promise<BuiltDoorbell> {
 
   // lcdMessage is threaded through when the /message GET net seeds a current message; makeCameraConfig only carries the key when it is supplied, so the no-message GET
   // case (the default omission) reads an absent lcdMessage and returns the empty string.
@@ -108,6 +118,13 @@ async function buildDoorbell(options: { chimeConfigs?: ProtectChimeConfig[]; dis
     ...(options.lcdMessage !== undefined ? { lcdMessage: options.lcdMessage } : {}), name: "Front Door" });
   const chimeConfigs = options.chimeConfigs ?? [];
   const store = new TestStateStore(makeProtectState({ cameras: [cameraConfig], ...(chimeConfigs.length ? { chimes: chimeConfigs } : {}) }));
+
+  // Seed a hydrated lastRing onto the store record before any observer exists, so the observer's baseline at subscribe carries it. No observer is registered yet, so
+  // this push only commits the state - it wakes nothing.
+  if(options.seedLastRing !== undefined) {
+
+    store.pushCameraPatch(cameraConfig.id, { lastRing: options.seedLastRing });
+  }
 
   // The HELD chime projections, one per seeded chime config and against this same store, captured in the SAME order the configs were supplied so a test can name them by
   // index. These are the exact instances the doorbell's setChimeVolume filters out of client.chimes and writes through, so a test's updateRejection lever and its
@@ -150,9 +167,9 @@ describe("doorbell capability observer effects and the trigger ring (doorbell-ef
       built = await buildDoorbell({ featureFlags: { hasChime: true }, userOptions: ["Enable.Doorbell.PhysicalChime"] });
 
       // The doorbell census: the camera's plain set (twelve, including the always-armed isDoorbell observer, the bare-motion lastMotion observer, the
-      // capability-reconcile featureFlags observer, and the Access-lock supportUnlock observer) plus the base pair plus the capability's four = eighteen. A drift here
-      // means an extra or missing observer slipped in.
-      assert.equal(built.nvr.client.state.observerCount, 18, "the doorbell wires eighteen observers (the camera twelve, the base pair, and the capability four)");
+      // capability-reconcile featureFlags observer, and the Access-lock supportUnlock observer) plus the base pair plus the capability's five (the four reflections and
+      // the opt-in lastRing observer, always armed) = nineteen. A drift here means an extra or missing observer slipped in.
+      assert.equal(built.nvr.client.state.observerCount, 19, "the doorbell wires nineteen observers (the camera twelve, the base pair, and the capability five)");
 
       // HARD-assert all three physical-chime switches exist FIRST: the gate is hasChime && hasFeature("Doorbell.PhysicalChime") (doorbell.ts). An absent service
       // would let the value assertions pass vacuously.
@@ -460,6 +477,134 @@ describe("doorbell capability observer effects and the trigger ring (doorbell-ef
       await triggerSwitch.getCharacteristic(Characteristic.On).triggerSet(false);
 
       assert.equal(ring.rings.length, 0, "a falsy trigger fires no ring");
+    });
+  });
+
+  describe("the lastRing -> doorbell ring reaction (opt-in observe-and-fire)", () => {
+
+    test("with the option, a truthy lastRing advance fires exactly one ring routed to this doorbell", async () => {
+
+      const dispatch = (nvr: ProtectNvr): ProtectEventDispatch => new RecordingRingDispatch(nvr);
+
+      built = await buildDoorbell({ dispatch, userOptions: ["Enable.Doorbell.LastRing"] });
+
+      const ring = built.nvr.events as unknown as RecordingRingDispatch;
+
+      assert.equal(ring.rings.length, 0, "no ring has fired before the advance");
+
+      // makeCameraConfig seeds no lastRing, so the baseline at subscribe is undefined and this first truthy push is a genuine change that wakes the observer.
+      built.nvr.client.state.pushCameraPatch(built.cameraConfig.id, { lastRing: 1700000000000 });
+
+      await settle();
+
+      assert.deepEqual(ring.rings, [{ id: built.cameraConfig.id }], "the lastRing advance fired exactly one ring through doorbellEventHandler, routed to this doorbell");
+    });
+
+    test("a repeated identical lastRing and an unrelated patch fire nothing; a later advance fires again", async () => {
+
+      const dispatch = (nvr: ProtectNvr): ProtectEventDispatch => new RecordingRingDispatch(nvr);
+
+      built = await buildDoorbell({ dispatch, userOptions: ["Enable.Doorbell.LastRing"] });
+
+      const ring = built.nvr.events as unknown as RecordingRingDispatch;
+
+      built.nvr.client.state.pushCameraPatch(built.cameraConfig.id, { lastRing: 1700000000000 });
+
+      await settle();
+
+      assert.equal(ring.rings.length, 1, "the first advance fired once");
+
+      // The store dedups on the selected value: an unrelated patch never wakes the lastRing observer, and a re-push of the same timestamp is not a change.
+      built.nvr.client.state.pushCameraPatch(built.cameraConfig.id, { isDark: true });
+      built.nvr.client.state.pushCameraPatch(built.cameraConfig.id, { lastRing: 1700000000000 });
+
+      await settle();
+
+      assert.equal(ring.rings.length, 1, "an unrelated patch and a repeated identical lastRing fire no further ring");
+
+      built.nvr.client.state.pushCameraPatch(built.cameraConfig.id, { lastRing: 1700000005000 });
+
+      await settle();
+
+      assert.equal(ring.rings.length, 2, "a later lastRing advance fires a second ring");
+    });
+
+    test("without the option, the same advance wakes the observer but fires nothing", async () => {
+
+      const dispatch = (nvr: ProtectNvr): ProtectEventDispatch => new RecordingRingDispatch(nvr);
+
+      built = await buildDoorbell({ dispatch });
+
+      const ring = built.nvr.events as unknown as RecordingRingDispatch;
+      const accessoryId = built.accessory.UUID;
+
+      // The observer is always armed, so the advance wakes it and the handler's hasFeature read is what holds the ring back. The wake is proven here rather than
+      // assumed from the census tests: a subscription to the observer-wake diagnostics channel, scoped to this test, captures the doorbell.lastRing wake attributed to
+      // this accessory, so the zero-ring assertion below cannot pass vacuously on a dead observer.
+      const wakes: ObserverWakePayload[] = [];
+      const onWake = (message: unknown): void => { wakes.push(message as ObserverWakePayload); };
+
+      diagnosticsChannel.subscribe("hbup:observer:wake", onWake);
+
+      try {
+
+        built.nvr.client.state.pushCameraPatch(built.cameraConfig.id, { lastRing: 1700000000000 });
+
+        await settle();
+
+        assert.ok(wakes.some((wake) => (wake.key === "doorbell.lastRing") && (wake.accessoryId === accessoryId)),
+          "the lastRing advance woke the doorbell.lastRing observer, attributed to this doorbell's accessory UUID");
+        assert.equal(ring.rings.length, 0, "without Enable.Doorbell.LastRing the lastRing advance woke the observer but fired no ring");
+      } finally {
+
+        diagnosticsChannel.unsubscribe("hbup:observer:wake", onWake);
+      }
+    });
+
+    test("with the option, a lastRing hydrated onto the record before construction never rings at startup", async () => {
+
+      const dispatch = (nvr: ProtectNvr): ProtectEventDispatch => new RecordingRingDispatch(nvr);
+
+      // The structural hydration safety, mirroring the camera suite's lastMotion case: the store seeds the observer's baseline at subscribe, so a value already present
+      // when the observer arms is the baseline and yields nothing on its own. seedLastRing commits a truthy lastRing to the store record BEFORE the doorbell is
+      // constructed, so the observer baselines against it.
+      built = await buildDoorbell({ dispatch, seedLastRing: 1700000000000, userOptions: ["Enable.Doorbell.LastRing"] });
+
+      const ring = built.nvr.events as unknown as RecordingRingDispatch;
+
+      assert.equal(ring.rings.length, 0, "a hydrated lastRing present at subscribe is the baseline and never rings at startup");
+
+      // The liveness control: a later advance off that hydrated baseline rings, so the zero above measures the hydration safety, not a dead observer.
+      built.nvr.client.state.pushCameraPatch(built.cameraConfig.id, { lastRing: 1700000005000 });
+
+      await settle();
+
+      assert.equal(ring.rings.length, 1, "a later advance off the hydrated baseline fires exactly one ring, so the observer is live");
+    });
+
+    test("with the option, a null lastRing does NOT fire even though it changed", async () => {
+
+      const dispatch = (nvr: ProtectNvr): ProtectEventDispatch => new RecordingRingDispatch(nvr);
+
+      built = await buildDoorbell({ dispatch, userOptions: ["Enable.Doorbell.LastRing"] });
+
+      const ring = built.nvr.events as unknown as RecordingRingDispatch;
+
+      // Two-step, mirroring the camera suite's falsy lastMotion case: fire once off a truthy value so the null push is a genuine truthy->null change that wakes the
+      // observer; the production if(!lastRing) guard, not a dead observer, is what suppresses the delivery.
+      built.nvr.client.state.pushCameraPatch(built.cameraConfig.id, { lastRing: 1700000000000 });
+
+      await settle();
+
+      const ringBaseline = ring.rings.length;
+
+      assert.equal(ringBaseline, 1, "the truthy advance fired once, so the null step measures a real change off a fired baseline");
+
+      built.nvr.client.state.pushCameraPatch(built.cameraConfig.id, { lastRing: null });
+
+      await settle();
+
+      assert.equal(ring.rings.length, ringBaseline, "the truthy->null change woke the observer but the if(!lastRing) guard suppressed the delivery");
     });
   });
 

@@ -26,6 +26,7 @@ If you're reading this, chances are you own, or would like to own, a [UniFi Prot
 
   * Doorbell Ring Support
     * `homebridge-unifi-protect` fully supports doorbell ring notifications. When you ring the doorbell, you'll get a notification on your iOS/macOS devices, including a snapshot of who's at the door. These snapshots tied to notifications are often called *rich notifications*. A UniFi Access intercom's doorbell press is delivered to HomeKit as a ring in exactly the same way.
+    * Ring notifications depend on the Protect account you've given HBUP being sent ring events. A shared or limited-permission account is never sent them, so a doorbell press would go unnoticed. If that's your situation, enable the `Doorbell.LastRing` [feature option](https://github.com/hjdhjd/homebridge-unifi-protect/blob/main/docs/FeatureOptions.md#doorbell) and HBUP will detect rings from the doorbell's last-ring timestamp instead. Leave it disabled on an account with the *full management role*, which already receives ring events and would otherwise ring twice for every press unless you have configured a ring delay.
 
   * Doorbell Camera and Motion Detection Support
     * Since the Protect doorbells are essentially a camera as far as UniFi Protect goes, `homebridge-unifi-protect` supports all the same features as other UniFi Protect cameras, including motion detection and video streaming.

@@ -86,12 +86,12 @@ describe("real doorbell construction (suite A)", () => {
     assert.equal(doorbellService.isPrimary, true, "configureDoorbellService marked the Doorbell service primary");
   });
 
-  test("the doorbell wires eighteen observers - the camera's plain-camera set plus the capability's four - and fires none at construction", () => {
+  test("the doorbell wires nineteen observers - the camera's plain-camera set plus the capability's five - and fires none at construction", () => {
 
     // The census: the base observers (name, firmware) + the camera set (the always-armed isDoorbell observer, the bare-motion lastMotion observer, the
     // capability-reconcile featureFlags observer, and the Access-lock supportUnlock observer all join the doorbell-attached camera's set) + the capability observers
-    // (lcdMessage, hasPackageCamera, chimeDuration, chimeVolume) = the doorbell's full observer set.
-    assert.equal(store.observerCount, 18, "the eighteen-observer census holds across the capability collapse and the always-armed isDoorbell observer");
+    // (lcdMessage, hasPackageCamera, chimeDuration, chimeVolume, lastRing) = the doorbell's full observer set.
+    assert.equal(store.observerCount, 19, "the nineteen-observer census holds across the capability collapse and the always-armed isDoorbell observer");
     assert.equal(constructionWakes, 0, "observers arm against the baseline and stay silent at construction");
   });
 
@@ -109,7 +109,7 @@ describe("real doorbell construction (suite A)", () => {
     assert.equal("messageSwitches" in doorbell, false, "the camera carries no messageSwitches field after the collapse");
   });
 
-  test("each of the capability's four observers wakes on its own slice, keyed verbatim to the camera's accessory UUID through publishObserverWake", async () => {
+  test("each of the capability's five observers wakes on its own slice, keyed verbatim to the camera's accessory UUID through publishObserverWake", async () => {
 
     // A self-contained construction so the slice pushes never perturb the shared suite state: a doorbell plus a chime that serves it, so the chime-volume slice is live.
     const localWakes: ObserverWakePayload[] = [];
@@ -146,6 +146,7 @@ describe("real doorbell construction (suite A)", () => {
     await assertWake("doorbell.hasPackageCamera", () => localStore.pushCameraFeatureFlags(cameraConfig.id, { hasPackageCamera: true }));
     await assertWake("doorbell.chimeVolume",
       () => localStore.pushChimePatch(chimeConfig.id, { ringSettings: [{ cameraId: cameraConfig.id, repeatTimes: 1, ringtoneId: "default", volume: 75 }] }));
+    await assertWake("doorbell.lastRing", () => localStore.pushCameraPatch(cameraConfig.id, { lastRing: 1700000000000 }));
 
     localDoorbell.cleanup();
     localController.abort();
@@ -241,13 +242,13 @@ describe("doorbell + package camera family construction (suite B)", () => {
       "the HomeKit-visible name carries the suffix");
   });
 
-  test("the family wires but does not fire: eighteen doorbell observers plus four package observers, zero construction wakes", () => {
+  test("the family wires but does not fire: nineteen doorbell observers plus four package observers, zero construction wakes", () => {
 
     // The package census: the inherited base observers (name, firmware) plus its bespoke camera.state availability and package-channel observers - and nothing from the
     // camera set. The doorbell-attached camera contributes its full observer set (its plain-camera set, now including the always-armed isDoorbell observer, the
     // bare-motion lastMotion observer, the capability-reconcile featureFlags observer, and the Access-lock supportUnlock observer, plus the capability's own plus the
     // base observers).
-    assert.equal(store.observerCount, 22, "eighteen doorbell observers plus the package's four");
+    assert.equal(store.observerCount, 23, "nineteen doorbell observers plus the package's four");
     assert.equal(constructionWakes, 0, "no observer fired during family construction");
   });
 

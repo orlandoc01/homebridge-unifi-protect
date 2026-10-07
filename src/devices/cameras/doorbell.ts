@@ -286,7 +286,8 @@ export class DoorbellCapability extends ProtectBase {
 
   // Spawn the doorbell's narrow-selector observers. The capability does not inherit ProtectDevice.spawnObservers (it extends ProtectBase), so there is no base template
   // to extend and no base name / info pair to worry about - the name and information observers belong to the camera. Doorbell-ring delivery and the package camera's
-  // motion are firehose occurrences the router handles, not observed here.
+  // motion are firehose occurrences the router handles, not observed here - with one opt-in exception: the lastRing observer below, which stands in for the ring event
+  // on an account the controller never sends one.
   private spawnObservers(): void {
 
     const cam = deviceSelectors.camera.byId(this.#device.id);
@@ -310,6 +311,26 @@ export class DoorbellCapability extends ProtectBase {
     // here, alongside cam, because a selector runs inside the store's dispatch, where a projection read against a removed record throws.
     this.observeState({ key: "doorbell.chimeVolume", selector: state => chimeVolumeFor(deviceSelectors.chime.all(state), id), title: "the chime volume" },
       () => this.updateChimeVolume());
+
+    // A doorbell press is a firehose occurrence the router delivers as a ring event - but only to an account the controller grants the event stream. A shared or
+    // limited-permission Protect account is never sent one: the press surfaces to it solely as an advance of the camera record's lastRing timestamp. When the user opts
+    // in, we observe that advance exactly as the camera observes lastMotion and route it through the same doorbell delivery the router uses, so HomeKit, the trigger
+    // switch, MQTT, and the log all see one ordinary ring. The store seeds this observer's baseline at subscribe and yields only on a subsequent advance, so a
+    // bootstrap-hydrated value or a reconnect-unchanged value never fires - the truthy guard only screens the null / never-rung case. A reconnect's re-bootstrap
+    // replaces the record wholesale, though, so a press that happened while we were disconnected arrives as an advanced lastRing and IS delivered as a ring on
+    // reconnect - the same shape the camera's lastMotion observer has for motion, and one the firehose path never has, since it never replays an outage-era ring.
+    // Opt-in rather than always-on: a full-management account is sent the ring event AND the lastRing advance for one press, and nothing short of a configured
+    // ringDelay would collapse the pair, so the option stays off unless the account needs it. The observer is always armed and the option is read at each wake, like
+    // the camera's bare-motion policy, so the doorbell's observer census does not vary with the option.
+    this.observeState({ key: "doorbell.lastRing", selector: state => cam(state)?.lastRing, title: "doorbell rings" }, lastRing => {
+
+      if(!lastRing || !this.hasFeature("Doorbell.LastRing")) {
+
+        return;
+      }
+
+      this.nvr.events.doorbellEventHandler(this.camera);
+    });
   }
 
   // Configure our access to the doorbell LCD screen.

@@ -127,6 +127,7 @@ export const featureOptions: Record<string, FeatureOptionEntry<ProtectOptionMeta
 
     { default: false, description: "Add a contact sensor that gets activates when a fingerprint or NFC successfully authenticates on a Protect doorbell.", meta: { hasFeature: ["hasFingerprintSensor"] }, name: "AuthSensor" },
     { default: false, description: "Add a switch accessory to control whether HomeKit will chime when the doorbell is pressed.", name: "Mute" },
+    { default: false, description: "Detect doorbell rings from the doorbell's last-ring timestamp. Enable this if your Protect account is not sent ring events, such as a shared or limited-permission account.", meta: { hasFeature: ["isDoorbell"] }, name: "LastRing" },
     { default: false, description: "Enable the doorbell messages feature.", meta: { hasFeature: ["isDoorbell"] }, name: "Messages" },
     { default: true, description: "Use messages saved to the Protect NVR as message switches.", group: "Messages", meta: { hasFeature: ["isDoorbell"] }, name: "Messages.FromDoorbell" },
     { default: false, description: "Add a dimmer accessory to control the Protect chime volume in HomeKit.", meta: { hasFeature: ["isDoorbell"] }, name: "Volume.Dimmer" },
